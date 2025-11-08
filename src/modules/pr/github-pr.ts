@@ -185,6 +185,31 @@ export async function getFileContentAtRef(params: {
 	return String(data.content ?? '');
 }
 
+export async function listChangeRequestFiles(params: {
+  owner: string;
+  repo: string;
+  number: number;
+  token: string;
+}): Promise<string[]> {
+  const { owner, repo, number, token } = params;
+  const octokit = new Octokit({ auth: token });
+  const res = await octokit.pulls.listFiles({ owner, repo, pull_number: number, per_page: 100 });
+  return res.data.map((f) => f.filename);
+}
+
+export async function compareBranchToBase(params: {
+  owner: string;
+  repo: string;
+  base: string;
+  head: string;
+  token: string;
+}): Promise<string[]> {
+  const { owner, repo, base, head, token } = params;
+  const octokit = new Octokit({ auth: token });
+  const res = await octokit.repos.compareCommits({ owner, repo, base, head });
+  return (res.data.files || []).map((f) => f.filename as string);
+}
+
 export async function createBranchFromBase(params: {
   owner: string;
   repo: string;

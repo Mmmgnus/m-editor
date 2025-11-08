@@ -54,6 +54,7 @@ export function FileTree({
 	roots,
 	filterExt = ['.md', '.markdown', '.mdx'],
 	draftPaths,
+	changedPaths,
 	onNewInDir
 }: {
 	paths: string[];
@@ -61,6 +62,7 @@ export function FileTree({
 	roots?: string[]; // limit to these roots
 	filterExt?: string[];
 	draftPaths?: Set<string>;
+	changedPaths?: Set<string>;
 	onNewInDir?: (dirPath: string) => void;
 }): JSX.Element {
 	const [expanded, setExpanded] = React.useState<Set<string>>(new Set());
@@ -114,6 +116,9 @@ export function FileTree({
 							onClick={() => onSelect(n.path)}
 						>
 							{n.name}
+							{changedPaths?.has(n.path) ? (
+								<span title="Changed in branch" style={{ color: '#2563eb', marginRight: 4 }}>•</span>
+							) : null}
 							{draftPaths?.has(n.path) ? (
 								<span title="Uncommitted local changes" style={{ color: '#f59e0b' }}>•</span>
 							) : null}

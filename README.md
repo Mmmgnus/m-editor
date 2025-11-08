@@ -7,6 +7,7 @@ Markdown editor to edit SSG sites.
 M Editor is a web-based, offline‑friendly editor for static sites that use Markdown. It targets Eleventy by default and integrates with GitHub to create/update branches and open pull requests. Images are committed to the repo and previews render from the active branch.
 
 See the Changelog for notable updates: [CHANGELOG.md](CHANGELOG.md)
+See the UX plan for designer‑friendly improvements: [UX_PLAN.md](UX_PLAN.md)
 
 ## Features
 - GitHub auth (token-based) and change requests (create, pick, update)

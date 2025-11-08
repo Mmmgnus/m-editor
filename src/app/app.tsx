@@ -3,7 +3,7 @@ import { Editor } from '@modules/editor/editor';
 import { Preview } from '@modules/preview/preview';
 import { AuthProvider, useAuth } from '@modules/auth/auth-context';
 import { Login } from '@modules/auth/login';
-import { commitToExistingBranch, createChangeRequest, getChangeRequestDetails, getFileContentAtRef, listOpenChangeRequests, listBranches, openChangeRequestForBranch, findChangeRequestForBranch, createBranchFromBase } from '@modules/change-requests/github';
+import { commitToExistingBranch, createChangeRequest, getChangeRequestDetails, getFileContentAtRef, listOpenChangeRequests, listBranches, openChangeRequestForBranch, findChangeRequestForBranch, createBranchFromBase, listChangeRequestFiles, compareBranchToBase } from '@modules/change-requests/github';
 import { listRepoPathsForRef } from '@modules/repo/tree';
 import { FileTree } from '@modules/repo/file-tree';
 import { clearLocalOverrides, loadConfig, saveLocalOverrides, type MEditorConfig } from '@modules/repo/config';
@@ -33,6 +33,8 @@ function Shell(): JSX.Element {
 	const [leftTab, setLeftTab] = React.useState<'content' | 'changes' | 'local'>('content');
   const [sidebarCRs, setSidebarCRs] = React.useState<Array<{ number: number; title: string }>>([]);
   const [sidebarCRFilter, setSidebarCRFilter] = React.useState<string>('');
+  const [crChangedFiles, setCrChangedFiles] = React.useState<string[]>([]);
+  const [crFilesLoading, setCrFilesLoading] = React.useState<boolean>(false);
   async function refreshCRs(): Promise<void> {
     if (!token || !cfg?.repo?.owner || !cfg?.repo?.repo) return;
     try {
@@ -58,12 +60,48 @@ function Shell(): JSX.Element {
   }
   const [crSyncing, setCrSyncing] = React.useState<boolean>(false);
 
+  async function refreshChangedFiles(): Promise<void> {
+    if (!cfg?.repo?.owner || !cfg?.repo?.repo || !token) return;
+    const owner = cfg.repo.owner;
+    const repo = cfg.repo.repo;
+    const base = cfg?.repo?.defaultBranch ?? cfg?.defaultBranch ?? 'main';
+    const head = activeCR?.branch || currentRef || base;
+    setCrFilesLoading(true);
+    try {
+      if (activeCR?.number) {
+        let files = await listChangeRequestFiles({ owner, repo, number: activeCR.number, token });
+        // Fallback to compare if the list is empty due to eventual consistency
+        if ((!files || files.length === 0) && head && head !== base) {
+          files = await compareBranchToBase({ owner, repo, base, head, token });
+        }
+        setCrChangedFiles(files || []);
+      } else if (head && head !== base) {
+        const files = await compareBranchToBase({ owner, repo, base, head, token });
+        setCrChangedFiles(files);
+      } else {
+        setCrChangedFiles([]);
+      }
+    } catch {
+      setCrChangedFiles([]);
+    } finally {
+      setCrFilesLoading(false);
+    }
+  }
+
+  // Keep changed files list in sync with current CR or branch
+  React.useEffect(() => {
+    void refreshChangedFiles();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeCR?.branch, activeCR?.number, currentRef, cfg?.repo?.owner, cfg?.repo?.repo, token]);
+
   async function switchToDefaultBranch(): Promise<void> {
     const nextRef = defaults.defaultBranch;
     setCrState({ status: 'loading' });
     try {
       // Clear active change request context
       setActiveCR(null);
+      // Clear changed files to avoid stale markers
+      setCrChangedFiles([]);
       // Load same file from default branch if possible
       if (token && cfg?.repo?.owner && cfg?.repo?.repo && activePath) {
         try {
@@ -274,6 +312,7 @@ function Shell(): JSX.Element {
           setSidebarCRs((prev) => [{ number: res.number!, title }, ...prev]);
         }
         refreshCRsWithRetry();
+        void refreshChangedFiles();
       }
 		} catch (e) {
 			setCrState({ status: 'error', message: (e as Error).message });
@@ -412,10 +451,17 @@ function Shell(): JSX.Element {
       const pr = await getChangeRequestDetails({ owner, repo, number: n, token });
       setActiveCR({ number: pr.number, branch: pr.head.ref, url: pr.url });
       setCurrentRef(pr.head.ref);
+      // Fetch changed files immediately for visible markers
+      try {
+        const files = await listChangeRequestFiles({ owner, repo, number: pr.number, token });
+        setCrChangedFiles(files);
+      } catch {}
       const paths = await listRepoPathsForRef({ owner, repo, ref: pr.head.ref, token });
       setTreePaths(paths);
       setPicker('file');
+      setLeftTab('content');
       setCrState({ status: 'idle' });
+      void refreshChangedFiles();
     } catch (e) {
       setCrState({ status: 'error', message: (e as Error).message });
     }
@@ -627,19 +673,21 @@ async function openOrCreateCRForBranch(): Promise<void> {
     try {
         const existing = await findChangeRequestForBranch({ owner, repo, head: activeCR.branch, token });
         if (existing) {
-            setActiveCR({ number: existing.number, branch: activeCR.branch, url: existing.url });
-            setCrState({ status: 'success', url: existing.url });
-            setLeftTab('changes');
-            refreshCRsWithRetry();
-            return;
+        setActiveCR({ number: existing.number, branch: activeCR.branch, url: existing.url });
+        setCrState({ status: 'success', url: existing.url });
+        setLeftTab('content');
+        refreshCRsWithRetry();
+        void refreshChangedFiles();
+        return;
         }
         const title = `Content updates for ${activeCR.branch}`;
         const body = activePath ? `Updates to ${activePath}` : undefined;
         const pr = await openChangeRequestForBranch({ owner, repo, head: activeCR.branch, base, title, body, token });
         setActiveCR({ number: pr.number, branch: activeCR.branch, url: pr.url });
         setCrState({ status: 'success', url: pr.url });
-        setLeftTab('changes');
+        setLeftTab('content');
         refreshCRsWithRetry();
+        void refreshChangedFiles();
     } catch (e) {
         setCrState({ status: 'error', message: (e as Error).message });
     }
@@ -703,11 +751,29 @@ async function openOrCreateCRForBranch(): Promise<void> {
               ) : (
                 <div style={{ marginBottom: 8, color: '#666' }}>Configure your repository in Settings to manage change requests.</div>
               )}
-              <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
-                <input type="text" placeholder="Filter change requests…" value={sidebarCRFilter} onChange={(e) => setSidebarCRFilter(e.target.value)} style={{ flex: 1, padding: 6 }} />
-                <button onClick={() => refreshCRsWithRetry()} disabled={crSyncing}>Refresh</button>
-                {crSyncing && <span style={{ fontSize: 12, color: '#666' }}>Syncing…</span>}
+            <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
+              <input type="text" placeholder="Filter change requests…" value={sidebarCRFilter} onChange={(e) => setSidebarCRFilter(e.target.value)} style={{ flex: 1, padding: 6 }} />
+              <button onClick={() => refreshCRsWithRetry()} disabled={crSyncing}>Refresh</button>
+              {crSyncing && <span style={{ fontSize: 12, color: '#666' }}>Syncing…</span>}
+            </div>
+            <div style={{ marginTop: 8 }}>
+              <strong>Files in this change request</strong>
+              <div style={{ marginTop: 6 }}>
+                {crFilesLoading ? (
+                  <div style={{ color: '#666', fontSize: 12 }}>Loading files…</div>
+                ) : crChangedFiles.length === 0 ? (
+                  <div style={{ color: '#666', fontSize: 12 }}>No changes</div>
+                ) : (
+                  <div style={{ maxHeight: 160, overflow: 'auto' }}>
+                    {crChangedFiles.map((f) => (
+                      <div key={f} style={{ padding: '4px 12px', cursor: 'pointer' }} onClick={() => void chooseFileFromSidebar(f)}>
+                        <span style={{ fontFamily: 'ui-monospace, monospace' }}>{f}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
+            </div>
             </div>
         ) : null}
       </div>
@@ -742,6 +808,18 @@ async function openOrCreateCRForBranch(): Promise<void> {
 								roots={cfg?.contentDirs}
 								onSelect={(p) => void chooseFileFromSidebar(p)}
 								draftPaths={draftPathSet}
+								changedPaths={(() => {
+									const base = cfg?.repo?.defaultBranch ?? cfg?.defaultBranch ?? 'main';
+									const head = activeCR?.branch || currentRef || base;
+									if (!head || head === base) return undefined;
+									const allowedRoots = cfg?.contentDirs ?? [];
+									const md = ['.md', '.markdown', '.mdx'];
+									const filtered = crChangedFiles.filter((p) => (
+										(allowedRoots.length === 0 || allowedRoots.some((r) => p.startsWith(r + '/'))) &&
+										md.some((ext) => p.toLowerCase().endsWith(ext))
+									));
+									return new Set(filtered);
+								})()}
 								onNewInDir={(dir) => {
 									setNewFilePath(
 										renderTemplate(defaults.pathTemplate, {
@@ -844,6 +922,7 @@ async function openOrCreateCRForBranch(): Promise<void> {
               paths={treePaths}
               roots={cfg?.contentDirs}
               onSelect={(p) => void chooseFile(p)}
+              changedPaths={new Set(crChangedFiles)}
             />
           </div>
         )}

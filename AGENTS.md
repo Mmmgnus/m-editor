@@ -1,6 +1,7 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
+- UX plan for user‑friendly flows: see `UX_PLAN.md`.
 - Source in `src/`:
   - `src/app/` shell and layout
   - `src/modules/` auth, repo, editor, preview, pr, pwa, assets, storage
