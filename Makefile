@@ -23,4 +23,4 @@ format-check:
 
 # Usage: make release VERSION=0.1.0
 release:
-	./scripts/release.sh $(VERSION)
+	bash ./scripts/release.sh $(VERSION)
