@@ -95,6 +95,15 @@ Create `public/.meditor.config.json` to tailor paths and repo defaults. Example:
 - Image does not render in preview: ensure the file was committed to the active branch and the path is under `assetsDir` (default `src/assets`).
 - Cannot update PR from a fork: current flow assumes head branch is in the same repo (fork PRs are read‑only here).
 
+## Release
+- Recommend tagging releases in Git:
+  - Using Makefile: `make release VERSION=0.1.0`
+  - Or directly:
+    - Create tag: `git tag -a v0.1.0 -m "v0.1.0"`
+    - Push tag: `git push origin v0.1.0`
+- Optional (version bump in package.json without publish):
+  - `npm version 0.1.0 -m "chore: release v%s" --git-tag-version=false`
+
 ## Roadmap (next)
 - Syntax highlighting for code blocks
 - Repo settings panel (edit config in-app)

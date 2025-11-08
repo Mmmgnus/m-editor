@@ -1,4 +1,4 @@
-.PHONY: dev build test lint lint-fix format format-check
+.PHONY: dev build test lint lint-fix format format-check release
 
 dev:
 	npm run dev
@@ -20,3 +20,7 @@ format:
 
 format-check:
 	npm run format:check
+
+# Usage: make release VERSION=0.1.0
+release:
+	./scripts/release.sh $(VERSION)
