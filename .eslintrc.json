@@ -1,0 +1,24 @@
+{
+  "root": true,
+  "env": {
+    "es2021": true,
+    "node": true,
+    "browser": true
+  },
+  "extends": ["eslint:recommended", "plugin:unicorn/recommended"],
+  "plugins": ["unicorn"],
+  "rules": {
+    "indent": ["error", "tab"],
+    "no-tabs": "off",
+    "unicorn/filename-case": [
+      "error",
+      { "cases": { "kebabCase": true } }
+    ]
+  },
+  "overrides": [
+    {
+      "files": ["**/*.test.js", "**/*.spec.js"],
+      "env": { "jest": true }
+    }
+  ]
+}

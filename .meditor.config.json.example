@@ -1,0 +1,25 @@
+{
+	"ssg": "eleventy",
+	"contentDirs": ["src/content"],
+	"assetsDir": "src/assets",
+	"defaultBranch": "main",
+	"frontmatterDefaults": {
+		"draft": true,
+		"tags": []
+	}
+,
+	"oauth": {
+		"githubClientId": "YOUR_CLIENT_ID",
+		"authBaseUrl": "https://your-auth-backend.example.com" // optional; required for device flow
+	}
+,
+	"repo": {
+		"provider": "github",
+		"owner": "your-username",
+		"repo": "your-eleventy-repo",
+		"defaultBranch": "main",
+		"prBranchPrefix": "content/",
+		"postPathTemplate": "{contentDir}/{date}-{slug}.md",
+		"prTitleTemplate": "Add: {title} ({path})"
+	}
+}

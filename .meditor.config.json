@@ -1,0 +1,19 @@
+{
+	"ssg": "eleventy",
+	"contentDirs": ["src/content", "src/posts"],
+	"assetsDir": "src/assets",
+	"defaultBranch": "main",
+	"frontmatterDefaults": {
+		"draft": true,
+		"tags": []
+	}
+,
+	"repo": {
+		"provider": "github",
+		"owner": "mmmgnus",
+		"repo": "example-site",
+		"defaultBranch": "main",
+		"prBranchPrefix": "content/",
+		"postPathTemplate": "{contentDir}/{date}-{slug}.md"
+	}
+}
