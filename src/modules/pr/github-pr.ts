@@ -11,7 +11,7 @@ export async function createBranchAndPR(params: {
 	body: string;
 	changes: FileChange[]; // text files only; binary not supported yet
 	token: string;
-}): Promise<{ url: string }> {
+}): Promise<{ url: string; number: number; head: string }> {
 	const { owner, repo, base, branch, title, body, changes, token } = params;
 	if (!changes.length) throw new Error('No file changes provided');
 	const octokit = new Octokit({ auth: token });
@@ -62,7 +62,7 @@ export async function createBranchAndPR(params: {
 
 	// 5) Open PR
 	const pr = await octokit.pulls.create({ owner, repo, head: uniqueBranch, base, title, body });
-	return { url: pr.data.html_url };
+	return { url: pr.data.html_url, number: pr.data.number, head: uniqueBranch };
 }
 
 async function ensureUniqueBranch(

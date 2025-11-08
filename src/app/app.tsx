@@ -43,6 +43,21 @@ function Shell(): JSX.Element {
     }
   }
 
+  function refreshCRsWithRetry(): void {
+    setCrSyncing(true);
+    void refreshCRs()
+      .catch(() => {})
+      .finally(() => {
+        // Retry once shortly after to mitigate eventual consistency
+        window.setTimeout(() => {
+          void refreshCRs()
+            .catch(() => {})
+            .finally(() => setCrSyncing(false));
+        }, 1200);
+      });
+  }
+  const [crSyncing, setCrSyncing] = React.useState<boolean>(false);
+
   async function switchToDefaultBranch(): Promise<void> {
     const nextRef = defaults.defaultBranch;
     setCrState({ status: 'loading' });
@@ -70,11 +85,15 @@ function Shell(): JSX.Element {
 	const [newFilePath, setNewFilePath] = React.useState<string>('');
   const [branchDrafts, setBranchDrafts] = React.useState<DraftRecord[]>([]);
   const [defaultDrafts, setDefaultDrafts] = React.useState<DraftRecord[]>([]);
-	const [imageOpen, setImageOpen] = React.useState<boolean>(false);
+  const [imageOpen, setImageOpen] = React.useState<boolean>(false);
   const [imageAlt, setImageAlt] = React.useState<string>('');
   const [imagePath, setImagePath] = React.useState<string>('');
   const imageFileRef = React.useRef<HTMLInputElement | null>(null);
-	const editorRef = React.useRef<import('@modules/editor/editor').EditorHandle | null>(null);
+  const editorRef = React.useRef<import('@modules/editor/editor').EditorHandle | null>(null);
+  // Insert existing image panel
+  const [existingImageOpen, setExistingImageOpen] = React.useState<boolean>(false);
+  const [existingImageFilter, setExistingImageFilter] = React.useState<string>('');
+  const [existingImages, setExistingImages] = React.useState<string[]>([]);
 
 	// Settings panel state
 	const [settingsOpen, setSettingsOpen] = React.useState<boolean>(false);
@@ -233,8 +252,8 @@ function Shell(): JSX.Element {
 		const branch = `${defaults.branchPrefix}${slug}`;
     const title = renderTemplate(defaults.crTitleTemplate, { title: inferredTitle, path, branch });
 		const body = `Created from the PWA editor\n\n- File: ${path}\n- Branch: ${branch}`;
-		try {
-			const res = await createChangeRequest({
+    try {
+      const res = await createChangeRequest({
 				owner,
 				repo,
 				base,
@@ -244,11 +263,18 @@ function Shell(): JSX.Element {
 				changes: [{ path, content: markdown }],
 				token
 			});
-			if (res.url) {
-				setCrState({ status: 'success', url: res.url });
-				setActiveCR({ number: null, branch, url: res.url });
-				setActivePath(path);
-			}
+      if (res.url) {
+        setCrState({ status: 'success', url: res.url });
+        setActiveCR({ number: res.number ?? null, branch, url: res.url });
+        setActivePath(path);
+        // Ensure the Change Requests tab reflects new CRs
+        setLeftTab('changes');
+        // Optimistically add to list for immediate feedback
+        if (res.number) {
+          setSidebarCRs((prev) => [{ number: res.number!, title }, ...prev]);
+        }
+        refreshCRsWithRetry();
+      }
 		} catch (e) {
 			setCrState({ status: 'error', message: (e as Error).message });
 		}
@@ -484,6 +510,34 @@ function Shell(): JSX.Element {
     }
   }
 
+  async function openExistingImagePanel(): Promise<void> {
+    if (!cfg?.repo?.owner || !cfg?.repo?.repo || !token) return;
+    const owner = cfg.repo.owner;
+    const repo = cfg.repo.repo;
+    const ref = activeCR?.branch || currentRef || (cfg.repo.defaultBranch ?? cfg.defaultBranch ?? 'main');
+    setCrState({ status: 'loading' });
+    try {
+      const allPaths = await listRepoPathsForRef({ owner, repo, ref: ref!, token });
+      const exts = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'];
+      const assetsDir = cfg.assetsDir ?? 'src/assets';
+      const imgs = allPaths.filter((p) => p.startsWith(assetsDir + '/') && exts.some((e) => p.toLowerCase().endsWith(e)));
+      setExistingImages(imgs);
+      setExistingImageFilter('');
+      setExistingImageOpen(true);
+      setCrState({ status: 'idle' });
+    } catch (e) {
+      setCrState({ status: 'error', message: (e as Error).message });
+    }
+  }
+
+  function insertExistingImage(path: string): void {
+    const fname = path.split('/').pop() || '';
+    const alt = fname.replace(/\.[^.]+$/, '');
+    const link = `![${alt}](${path})`;
+    editorRef.current?.insertTextAtCursor(link);
+    setExistingImageOpen(false);
+  }
+
   async function chooseBranch(branch: string): Promise<void> {
     if (!token) return;
     const owner = cfg?.repo?.owner!;
@@ -575,6 +629,8 @@ async function openOrCreateCRForBranch(): Promise<void> {
         if (existing) {
             setActiveCR({ number: existing.number, branch: activeCR.branch, url: existing.url });
             setCrState({ status: 'success', url: existing.url });
+            setLeftTab('changes');
+            refreshCRsWithRetry();
             return;
         }
         const title = `Content updates for ${activeCR.branch}`;
@@ -582,6 +638,8 @@ async function openOrCreateCRForBranch(): Promise<void> {
         const pr = await openChangeRequestForBranch({ owner, repo, head: activeCR.branch, base, title, body, token });
         setActiveCR({ number: pr.number, branch: activeCR.branch, url: pr.url });
         setCrState({ status: 'success', url: pr.url });
+        setLeftTab('changes');
+        refreshCRsWithRetry();
     } catch (e) {
         setCrState({ status: 'error', message: (e as Error).message });
     }
@@ -635,6 +693,9 @@ async function openOrCreateCRForBranch(): Promise<void> {
                   <button onClick={openImagePanel} disabled={crState.status === 'loading'}>
                     Insert image…
                   </button>
+                  <button onClick={openExistingImagePanel} disabled={crState.status === 'loading'}>
+                    Insert existing image…
+                  </button>
                   <button onClick={openNewFilePanel} disabled={crState.status === 'loading'}>
                     New file…
                   </button>
@@ -642,9 +703,10 @@ async function openOrCreateCRForBranch(): Promise<void> {
               ) : (
                 <div style={{ marginBottom: 8, color: '#666' }}>Configure your repository in Settings to manage change requests.</div>
               )}
-              <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
+              <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
                 <input type="text" placeholder="Filter change requests…" value={sidebarCRFilter} onChange={(e) => setSidebarCRFilter(e.target.value)} style={{ flex: 1, padding: 6 }} />
-                <button onClick={() => void refreshCRs()}>Refresh</button>
+                <button onClick={() => refreshCRsWithRetry()} disabled={crSyncing}>Refresh</button>
+                {crSyncing && <span style={{ fontSize: 12, color: '#666' }}>Syncing…</span>}
               </div>
             </div>
         ) : null}
@@ -785,6 +847,33 @@ async function openOrCreateCRForBranch(): Promise<void> {
             />
           </div>
         )}
+        {existingImageOpen && (
+          <div style={{ borderBottom: '1px solid #e0e0e0' }}>
+            <div style={{ padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 12 }}>
+              <strong>Insert Existing Image</strong>
+              <input type="text" placeholder="Filter images…" value={existingImageFilter} onChange={(e) => setExistingImageFilter(e.target.value)} style={{ padding: 4, minWidth: 240 }} />
+              <button onClick={() => setExistingImageOpen(false)} style={{ marginLeft: 'auto' }}>Close</button>
+            </div>
+            <div style={{ maxHeight: 240, overflow: 'auto' }}>
+              {existingImages
+                .filter((p) => (existingImageFilter ? p.toLowerCase().includes(existingImageFilter.toLowerCase()) : true))
+                .map((p) => {
+                  const owner = cfg?.repo?.owner!;
+                  const repo = cfg?.repo?.repo!;
+                  const ref = activeCR?.branch || currentRef || (cfg?.repo?.defaultBranch ?? cfg?.defaultBranch ?? 'main');
+                  const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${ref}/${p}`;
+                  const name = p.split('/').pop() || p;
+                  return (
+                    <div key={p} style={{ padding: '6px 12px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10 }} onClick={() => insertExistingImage(p)}>
+                      <img src={rawUrl} alt={name} style={{ width: 48, height: 48, objectFit: 'cover', borderRadius: 4, border: '1px solid #e0e0e0' }} loading="lazy" />
+                      <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p}</span>
+                    </div>
+                  );
+                })}
+              {existingImages.length === 0 && <div style={{ padding: '8px 12px', color: '#666' }}>No images found in assets</div>}
+            </div>
+          </div>
+        )}
         {settingsOpen && (
           <div style={{ borderBottom: '1px solid #e0e0e0' }}>
             <div style={{ padding: '8px 12px', display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12, alignItems: 'end' }}>
@@ -902,7 +991,12 @@ async function openOrCreateCRForBranch(): Promise<void> {
 				</header>
             <Preview
               markdown={markdown}
-              repo={activeCR && cfg?.repo?.owner && cfg?.repo?.repo ? { owner: cfg.repo.owner, repo: cfg.repo.repo, ref: activeCR.branch, filePath: activePath ?? undefined } : undefined}
+              repo={(() => {
+                if (!cfg?.repo?.owner || !cfg?.repo?.repo) return undefined;
+                const ref = activeCR?.branch || currentRef || (cfg?.repo?.defaultBranch ?? cfg?.defaultBranch ?? 'main');
+                if (!ref) return undefined;
+                return { owner: cfg.repo.owner, repo: cfg.repo.repo, ref, filePath: activePath ?? undefined };
+              })()}
               assetsDir={cfg?.assetsDir}
             />
 			</section>
