@@ -185,6 +185,42 @@ export async function getFileContentAtRef(params: {
 	return String(data.content ?? '');
 }
 
+export async function createBranchFromBase(params: {
+  owner: string;
+  repo: string;
+  base: string; // base branch name
+  branch: string; // new branch name
+  token: string;
+}): Promise<{ branch: string; sha: string }> {
+  const { owner, repo, base, branch, token } = params;
+  const octokit = new Octokit({ auth: token });
+  const baseRef = await octokit.git.getRef({ owner, repo, ref: `heads/${base}` });
+  const baseSha = baseRef.data.object.sha;
+  await octokit.git.createRef({ owner, repo, ref: `refs/heads/${branch}`, sha: baseSha });
+  return { branch, sha: baseSha };
+}
+
+// Change Request naming aliases (wrappers)
+export async function createChangeRequest(params: Parameters<typeof createBranchAndPR>[0]) {
+  return createBranchAndPR(params);
+}
+
+export async function listOpenChangeRequests(params: Parameters<typeof listOpenPRs>[0]) {
+  return listOpenPRs(params);
+}
+
+export async function getChangeRequestDetails(params: Parameters<typeof getPRDetails>[0]) {
+  return getPRDetails(params);
+}
+
+export async function openChangeRequestForBranch(params: Parameters<typeof openPRForBranch>[0]) {
+  return openPRForBranch(params);
+}
+
+export async function findChangeRequestForBranch(params: Parameters<typeof findPRForBranch>[0]) {
+  return findPRForBranch(params);
+}
+
 export async function listBranches(params: {
 	owner: string;
 	repo: string;

@@ -9,7 +9,7 @@ M Editor is a web-based, offline‑friendly editor for static sites that use Mar
 See the Changelog for notable updates: [CHANGELOG.md](CHANGELOG.md)
 
 ## Features
-- GitHub auth (token-based) and PR workflows (create, pick, update)
+- GitHub auth (token-based) and change requests (create, pick, update)
 - Live Markdown preview (GFM), frontmatter editing panel
 - Documents sidebar (repo tree filtered to content dirs)
 - Image upload: commits to `assetsDir` and inserts markdown link
@@ -49,7 +49,7 @@ Create `public/.meditor.config.json` to tailor paths and repo defaults. Example:
     "defaultBranch": "main",
     "prBranchPrefix": "content/",
     "postPathTemplate": "{contentDir}/{date}-{slug}.md",
-    "prTitleTemplate": "Add: {title} ({path})"
+    "crTitleTemplate": "Add: {title} ({path})"
   }
 }
 ```
@@ -57,15 +57,15 @@ Create `public/.meditor.config.json` to tailor paths and repo defaults. Example:
 - `contentDirs`: folders shown in the Documents sidebar (default `src/content`).
 - `assetsDir`: where images are committed (default `src/assets`).
 - `postPathTemplate`: used when creating new posts and default paths.
-- `prTitleTemplate`: customize PR titles with `{title}`, `{path}`, `{branch}`.
+- `crTitleTemplate`: customize change request titles with `{title}`, `{path}`, `{branch}`.
 
 ## Auth & GitHub
 - Click “Sign in to GitHub” and use a token with Contents: Read/Write scope for your repo(s).
 - The app updates branches directly and opens PRs via the GitHub API.
 
 ## Typical Workflow
-- Pick Branch or PR → choose a file from the sidebar → edit
-- Update PR to commit changes on the active branch
+- Pick Branch (footer) or select a Change Request → choose a file from the tree → edit
+- Update change request to commit changes on the working branch
 - New file… to add a new post at a templated path
 - Insert image… to upload a file under `assetsDir/YYYY/MM/` and insert `![alt](path)`
 
@@ -76,14 +76,18 @@ Create `public/.meditor.config.json` to tailor paths and repo defaults. Example:
   - Paths under `assetsDir` are treated as repo‑root.
 
 ## Offline Drafts
-- Autosaves content locally per `{owner}/{repo}:{branch}:{path}`.
+- Autosaves content locally per `{owner}/{repo}:{branch}:{path}` after the first edit (opening a file alone does not create a draft).
 - Auto‑restore on reopen; shows a banner with Undo/Clear.
-- “Drafts” panel lists saved drafts for the current repo.
+- Local changes:
+  - File tree shows a yellow dot for files with local changes on the current branch.
+  - “Local Changes” tab lists drafts on the published (default) branch with Open/Restore actions.
 
 ## UI Notes
-- Documents sidebar: shows files within `contentDirs`; filter box + refresh.
-- PR tools: Create PR, Pick PR, Pick Branch, Update PR, Open/Create PR for Branch.
-- New/Change file and Insert image available when a branch is active.
+- Tabs (left panel):
+  - Content: file tree (filtered by `contentDirs`) + quick search
+  - Change Requests: list, filter, and actions (Create/Update/Open-Create/Change file/Insert image/New file)
+  - Local Changes: shows local drafts on the published branch (Open/Restore)
+- Branch footer (sticky): branch name, Switch to Published, Pick branch.
 
 ## Conventions
 - JS/TS filenames: kebab-case (e.g., `text-buffer.ts`).

@@ -44,10 +44,10 @@ indent_size = 2
 - Coverage: target ≥80% where tooling exists (`npm run test:coverage`, `pytest --cov`).
 - Include regression tests with bug fixes.
 
-## Commit & Pull Request Guidelines
+## Commit & Change Request Guidelines
 - Commits: Conventional Commits (e.g., `feat: editor preview`, `fix: image path rewrite`).
-- Branch naming: content branches `content/<slug>` by default (configurable).
-- PRs: clear description, linked issues, screenshots for UI changes, note breaking changes, include a test plan.
+- Branch naming: working branches use `content/<slug>` by default (configurable).
+- Change requests: clear description, linked issues, screenshots for UI changes, note breaking changes, include a test plan.
 
 ## Security & Configuration Tips
 - Never commit secrets; use `.env.example` and `.gitignore`.
@@ -59,3 +59,7 @@ indent_size = 2
 - Use small, reviewable patches; avoid unrelated changes.
 - Update or add tests with code changes; run `make test` before proposing.
 - Document new commands in this file or the Makefile.
+- Follow app UX conventions:
+  - Tabs: Content, Change Requests, Local Changes
+  - Sticky branch footer with Switch to Published and Pick branch
+  - Local drafts (yellow dot) appear only after the first edit

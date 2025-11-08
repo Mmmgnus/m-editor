@@ -3,10 +3,10 @@ import { Editor } from '@modules/editor/editor';
 import { Preview } from '@modules/preview/preview';
 import { AuthProvider, useAuth } from '@modules/auth/auth-context';
 import { Login } from '@modules/auth/login';
-import { commitToExistingBranch, createBranchAndPR, getPRDetails, getFileContentAtRef, listOpenPRs, listBranches, openPRForBranch, findPRForBranch } from '@modules/pr/github-pr';
+import { commitToExistingBranch, createChangeRequest, getChangeRequestDetails, getFileContentAtRef, listOpenChangeRequests, listBranches, openChangeRequestForBranch, findChangeRequestForBranch, createBranchFromBase } from '@modules/change-requests/github';
 import { listRepoPathsForRef } from '@modules/repo/tree';
 import { FileTree } from '@modules/repo/file-tree';
-import { loadConfig, type MEditorConfig } from '@modules/repo/config';
+import { clearLocalOverrides, loadConfig, saveLocalOverrides, type MEditorConfig } from '@modules/repo/config';
 import { parseFrontmatter } from '@modules/preview/renderer';
 import { useDraft } from '@modules/storage/use-draft';
 import { listDrafts, clearDraft as clearDraftKey, type DraftRecord } from '@modules/storage/drafts';
@@ -17,46 +17,111 @@ function Shell(): JSX.Element {
 	const [markdown, setMarkdown] = React.useState<string>(
 		'---\ntitle: New Post\ndate: 2025-01-01\ntags: []\ndraft: true\n---\n\n# Hello Eleventy\n'
 	);
-	const [prState, setPrState] = React.useState<
-		{ status: 'idle' | 'loading' | 'success' | 'error'; url?: string; message?: string }
-	>({ status: 'idle' });
+  const [crState, setCrState] = React.useState<
+    { status: 'idle' | 'loading' | 'success' | 'error'; url?: string; message?: string }
+  >({ status: 'idle' });
 
 	const [cfg, setCfg] = React.useState<MEditorConfig | null>(null);
-	const [activePR, setActivePR] = React.useState<{ number: number | null; branch: string; url: string } | null>(null);
+  const [activeCR, setActiveCR] = React.useState<{ number: number | null; branch: string; url: string } | null>(null);
 	const [activePath, setActivePath] = React.useState<string | null>(null);
-	const [picker, setPicker] = React.useState<null | 'pr' | 'branch' | 'file' | 'drafts'>(null);
+	const [picker, setPicker] = React.useState<null | 'branch' | 'file'>(null);
 	const [items, setItems] = React.useState<Array<any>>([]);
 	const [currentRef, setCurrentRef] = React.useState<string | null>(null);
 	const [treePaths, setTreePaths] = React.useState<string[]>([]);
+	const [draftPathSet, setDraftPathSet] = React.useState<Set<string>>(new Set());
 	const [sidebarFilter, setSidebarFilter] = React.useState<string>('');
-	const [prFilter, setPrFilter] = React.useState<string>('');
+	const [leftTab, setLeftTab] = React.useState<'content' | 'changes' | 'local'>('content');
+  const [sidebarCRs, setSidebarCRs] = React.useState<Array<{ number: number; title: string }>>([]);
+  const [sidebarCRFilter, setSidebarCRFilter] = React.useState<string>('');
+  async function refreshCRs(): Promise<void> {
+    if (!token || !cfg?.repo?.owner || !cfg?.repo?.repo) return;
+    try {
+      const crs = await listOpenChangeRequests({ owner: cfg.repo.owner, repo: cfg.repo.repo, token });
+      setSidebarCRs(crs.map((p) => ({ number: p.number, title: p.title })));
+    } catch {
+      // ignore
+    }
+  }
+
+  async function switchToDefaultBranch(): Promise<void> {
+    const nextRef = defaults.defaultBranch;
+    setCrState({ status: 'loading' });
+    try {
+      // Clear active change request context
+      setActiveCR(null);
+      // Load same file from default branch if possible
+      if (token && cfg?.repo?.owner && cfg?.repo?.repo && activePath) {
+        try {
+          const content = await getFileContentAtRef({ owner: cfg.repo.owner, repo: cfg.repo.repo, path: activePath, ref: nextRef, token });
+          setMarkdown(content);
+        } catch {
+          // If file doesn't exist on default, keep current editor content
+        }
+      }
+      setCurrentRef(nextRef);
+      await refreshSidebarTree();
+      setCrState({ status: 'idle' });
+    } catch (e) {
+      setCrState({ status: 'error', message: (e as Error).message });
+    }
+  }
 	const [branchFilter, setBranchFilter] = React.useState<string>('');
 	const [newFileOpen, setNewFileOpen] = React.useState<boolean>(false);
 	const [newFilePath, setNewFilePath] = React.useState<string>('');
-  const [drafts, setDrafts] = React.useState<DraftRecord[]>([]);
-  const [draftsFilter, setDraftsFilter] = React.useState<string>('');
-  const [imageOpen, setImageOpen] = React.useState<boolean>(false);
+  const [branchDrafts, setBranchDrafts] = React.useState<DraftRecord[]>([]);
+  const [defaultDrafts, setDefaultDrafts] = React.useState<DraftRecord[]>([]);
+	const [imageOpen, setImageOpen] = React.useState<boolean>(false);
   const [imageAlt, setImageAlt] = React.useState<string>('');
   const [imagePath, setImagePath] = React.useState<string>('');
   const imageFileRef = React.useRef<HTMLInputElement | null>(null);
-  const editorRef = React.useRef<import('@modules/editor/editor').EditorHandle | null>(null);
+	const editorRef = React.useRef<import('@modules/editor/editor').EditorHandle | null>(null);
+
+	// Settings panel state
+	const [settingsOpen, setSettingsOpen] = React.useState<boolean>(false);
+	const [sOwner, setSOwner] = React.useState<string>('');
+	const [sRepo, setSRepo] = React.useState<string>('');
+	const [sDefaultBranch, setSDefaultBranch] = React.useState<string>('main');
+	const [sContentDirs, setSContentDirs] = React.useState<string>('src/content');
+	const [sAssetsDir, setSAssetsDir] = React.useState<string>('src/assets');
+	const [sPrBranchPrefix, setSPrBranchPrefix] = React.useState<string>('content/');
+	const [sPostPathTemplate, setSPostPathTemplate] = React.useState<string>('{contentDir}/{date}-{slug}.md');
+  const [sCrTitleTemplate, setSCrTitleTemplate] = React.useState<string>('Add post: {title} ({path})');
+	const [settingsMsg, setSettingsMsg] = React.useState<string>('');
 
 	const draftKey = React.useMemo(() => {
-		if (!cfg?.repo?.owner || !cfg?.repo?.repo || !activePR?.branch || !activePath) return null;
+		if (!cfg?.repo?.owner || !cfg?.repo?.repo || !activeCR?.branch || !activePath) return null;
 		return {
 			owner: cfg.repo.owner,
 			repo: cfg.repo.repo,
-			branch: activePR.branch,
+			branch: activeCR.branch,
 			path: activePath
 		};
-	}, [cfg?.repo?.owner, cfg?.repo?.repo, activePR?.branch, activePath]);
+	}, [cfg?.repo?.owner, cfg?.repo?.repo, activeCR?.branch, activePath]);
 
-	const { status: draftStatus, undoRestore, clear: clearDraft } = useDraft({
+  const { status: draftStatus, undoRestore, clear: clearDraft } = useDraft({
 		enabled: Boolean(draftKey),
 		key: draftKey,
 		markdown,
 		setMarkdown
 	});
+
+	// Refresh draft indicators when branch changes or a save occurs
+  React.useEffect(() => {
+    void (async () => {
+      if (!cfg?.repo?.owner || !cfg?.repo?.repo) return;
+      const defaultBranch = cfg?.repo?.defaultBranch ?? cfg?.defaultBranch ?? 'main';
+      const branch = activeCR?.branch || currentRef || defaultBranch;
+      if (!branch) return;
+      const ds = await listDrafts({ owner: cfg.repo.owner, repo: cfg.repo.repo, branch });
+      setDraftPathSet(new Set(ds.map((d) => d.path)));
+      setBranchDrafts(ds);
+
+      // Also compute drafts for published (default) branch for Local Changes tab
+      const dsDefault = await listDrafts({ owner: cfg.repo.owner, repo: cfg.repo.repo, branch: defaultBranch });
+      setDefaultDrafts(dsDefault);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cfg?.repo?.owner, cfg?.repo?.repo, activeCR?.branch, currentRef, draftStatus.savedAt]);
 
 	React.useEffect(() => {
 		void (async () => {
@@ -65,14 +130,28 @@ function Shell(): JSX.Element {
 		})();
 	}, []);
 
+  // Load Change Requests for sidebar when tab switches
+  React.useEffect(() => {
+    void (async () => {
+      if (leftTab !== 'changes') return;
+      if (!token || !cfg?.repo?.owner || !cfg?.repo?.repo) return;
+      try {
+        const crs = await listOpenChangeRequests({ owner: cfg.repo.owner, repo: cfg.repo.repo, token });
+        setSidebarCRs(crs.map((p) => ({ number: p.number, title: p.title })));
+      } catch {
+        // ignore
+      }
+    })();
+  }, [leftTab, token, cfg?.repo?.owner, cfg?.repo?.repo]);
+
 	// Load initial tree for default branch if none selected yet
 	React.useEffect(() => {
 		if (!token || !cfg?.repo?.owner || !cfg?.repo?.repo) return;
-		const ref = activePR?.branch || currentRef || (cfg.repo.defaultBranch ?? cfg.defaultBranch ?? 'main');
+	const ref = activeCR?.branch || currentRef || (cfg.repo.defaultBranch ?? cfg.defaultBranch ?? 'main');
 		if (!currentRef) setCurrentRef(ref);
 		void (async () => {
 			try {
-				const paths = await listRepoPathsForRef({ owner: cfg.repo!.owner!, repo: cfg.repo!.repo!, ref, token });
+    const paths = await listRepoPathsForRef({ owner: cfg.repo!.owner!, repo: cfg.repo!.repo!, ref, token });
 				setTreePaths(paths);
 			} catch {
 				// ignore for now
@@ -84,11 +163,11 @@ function Shell(): JSX.Element {
 	const defaults = React.useMemo(() => {
 		const contentDir = cfg?.contentDirs?.[0] ?? 'src/content';
 		const defaultBranch = cfg?.repo?.defaultBranch ?? cfg?.defaultBranch ?? 'main';
-		const branchPrefix = cfg?.repo?.prBranchPrefix ?? 'content/';
-		const pathTemplate = cfg?.repo?.postPathTemplate ?? '{contentDir}/{date}-{slug}.md';
-		const prTitleTemplate = cfg?.repo?.prTitleTemplate ?? 'Add post: {title} ({path})';
-		return { contentDir, defaultBranch, branchPrefix, pathTemplate, prTitleTemplate };
-	}, [cfg]);
+    const branchPrefix = cfg?.repo?.prBranchPrefix ?? 'content/';
+    const pathTemplate = cfg?.repo?.postPathTemplate ?? '{contentDir}/{date}-{slug}.md';
+    const crTitleTemplate = cfg?.repo?.crTitleTemplate ?? 'Add post: {title} ({path})';
+    return { contentDir, defaultBranch, branchPrefix, pathTemplate, crTitleTemplate };
+  }, [cfg]);
 
 	function guessTitle(): string {
 		const { data } = parseFrontmatter(markdown);
@@ -136,13 +215,13 @@ function Shell(): JSX.Element {
     return `${assetsDir}/${y}/${m}/${fileName}`;
   }
 
-	async function onCreatePR(): Promise<void> {
+	async function onCreateCR(): Promise<void> {
 		if (!token) return;
-		setPrState({ status: 'loading' });
+		setCrState({ status: 'loading' });
 		const owner = cfg?.repo?.owner;
 		const repo = cfg?.repo?.repo;
 		if (!owner || !repo) {
-			setPrState({ status: 'error', message: 'Missing repo.owner or repo.repo in .meditor.config.json' });
+			setCrState({ status: 'error', message: 'Missing repo.owner or repo.repo in .meditor.config.json' });
 			return;
 		}
 		const base = defaults.defaultBranch;
@@ -152,10 +231,10 @@ function Shell(): JSX.Element {
 		const contentDir = defaults.contentDir;
 		const path = renderTemplate(defaults.pathTemplate, { contentDir, date, slug });
 		const branch = `${defaults.branchPrefix}${slug}`;
-		const title = renderTemplate(defaults.prTitleTemplate, { title: inferredTitle, path, branch });
+    const title = renderTemplate(defaults.crTitleTemplate, { title: inferredTitle, path, branch });
 		const body = `Created from the PWA editor\n\n- File: ${path}\n- Branch: ${branch}`;
 		try {
-			const res = await createBranchAndPR({
+			const res = await createChangeRequest({
 				owner,
 				repo,
 				base,
@@ -166,61 +245,38 @@ function Shell(): JSX.Element {
 				token
 			});
 			if (res.url) {
-				setPrState({ status: 'success', url: res.url });
-				setActivePR({ number: null, branch, url: res.url });
+				setCrState({ status: 'success', url: res.url });
+				setActiveCR({ number: null, branch, url: res.url });
 				setActivePath(path);
 			}
 		} catch (e) {
-			setPrState({ status: 'error', message: (e as Error).message });
+			setCrState({ status: 'error', message: (e as Error).message });
 		}
 	}
 
-	async function onOpenPR(): Promise<void> {
-		if (!token) return;
-		const owner = cfg?.repo?.owner;
-		const repo = cfg?.repo?.repo;
-		if (!owner || !repo) {
-			setPrState({ status: 'error', message: 'Missing repo.owner or repo.repo in .meditor.config.json' });
-			return;
-		}
-		const input = window.prompt('Enter PR number to open');
-		const number = input ? Number(input) : NaN;
-		if (!number || Number.isNaN(number)) return;
-		setPrState({ status: 'loading' });
-		try {
-			const pr = await getPRDetails({ owner, repo, number, token });
-			let path = activePath ?? window.prompt('Path to edit for this PR (e.g., src/content/hello.md)')?.trim() ?? null;
-			if (!path) {
-				setPrState({ status: 'error', message: 'No file path provided' });
-				return;
-			}
-			const content = await getFileContentAtRef({ owner, repo, path, ref: pr.head.ref, token });
-			setMarkdown(content);
-			setActivePR({ number: pr.number, branch: pr.head.ref, url: pr.url });
-			setActivePath(path);
-			setPrState({ status: 'idle' });
-		} catch (e) {
-			setPrState({ status: 'error', message: (e as Error).message });
-		}
-	}
 
-	async function onUpdatePR(): Promise<void> {
-		if (!token || !activePR || !activePath) return;
+  async function onUpdateCR(): Promise<void> {
+		if (!token || !activePath) return;
+		// Ensure working on a non-default branch
+		if (!activeCR || activeCR.branch === defaults.defaultBranch) {
+			await ensureWorkingBranch();
+		}
+		if (!activeCR) return;
 		const owner = cfg?.repo?.owner!;
 		const repo = cfg?.repo?.repo!;
-		setPrState({ status: 'loading' });
+		setCrState({ status: 'loading' });
 		try {
 			await commitToExistingBranch({
 				owner,
 				repo,
-				branch: activePR.branch,
+				branch: activeCR.branch,
 				message: `chore: update ${activePath}`,
 				changes: [{ path: activePath, content: markdown }],
 				token
 			});
-			setPrState({ status: 'success', url: activePR.url });
+			setCrState({ status: 'success', url: activeCR.url });
 		} catch (e) {
-			setPrState({ status: 'error', message: (e as Error).message });
+			setCrState({ status: 'error', message: (e as Error).message });
 		}
 	}
 
@@ -230,24 +286,28 @@ function Shell(): JSX.Element {
 	}
 
 	async function createNewFileInBranch(): Promise<void> {
-		if (!token || !activePR || !newFilePath) return;
+		if (!token || !newFilePath) return;
+		if (!activeCR || activeCR.branch === defaults.defaultBranch) {
+			await ensureWorkingBranch();
+		}
+		if (!activeCR) return;
 		const owner = cfg?.repo?.owner!;
 		const repo = cfg?.repo?.repo!;
-		setPrState({ status: 'loading' });
+		setCrState({ status: 'loading' });
 		try {
 			await commitToExistingBranch({
 				owner,
 				repo,
-				branch: activePR.branch,
+				branch: activeCR.branch,
 				message: `chore: add ${newFilePath}`,
 				changes: [{ path: newFilePath, content: markdown }],
 				token
 			});
 			setActivePath(newFilePath);
 			setNewFileOpen(false);
-			setPrState({ status: 'success', url: activePR.url });
+			setCrState({ status: 'success', url: activeCR.url });
 		} catch (e) {
-			setPrState({ status: 'error', message: (e as Error).message });
+			setCrState({ status: 'error', message: (e as Error).message });
 		}
 	}
 
@@ -257,99 +317,138 @@ function Shell(): JSX.Element {
 		setNewFileOpen(false);
 	}
 
-	async function openPicker(type: 'pr' | 'branch'): Promise<void> {
+	async function openPicker(type: 'branch'): Promise<void> {
 		if (!token) return;
 		const owner = cfg?.repo?.owner;
 		const repo = cfg?.repo?.repo;
 		if (!owner || !repo) {
-			setPrState({ status: 'error', message: 'Missing repo.owner or repo.repo in .meditor.config.json' });
+			setCrState({ status: 'error', message: 'Missing repo.owner or repo.repo in .meditor.config.json' });
 			return;
 		}
-		setPrState({ status: 'loading' });
+		setCrState({ status: 'loading' });
 		try {
-			if (type === 'pr') {
-    const prs = await listOpenPRs({ owner, repo, token });
-				setItems(prs);
-			} else {
-    const branches = await listBranches({ owner, repo, token });
-				setItems(branches);
-			}
+			const branches = await listBranches({ owner, repo, token });
+			setItems(branches);
 			setPicker(type);
-			setPrState({ status: 'idle' });
+			setCrState({ status: 'idle' });
 		} catch (e) {
-			setPrState({ status: 'error', message: (e as Error).message });
+			setCrState({ status: 'error', message: (e as Error).message });
 		}
 	}
 
-	async function openDrafts(): Promise<void> {
-		if (!cfg?.repo?.owner || !cfg?.repo?.repo) return;
-		setPrState({ status: 'loading' });
-		try {
-			const list = await listDrafts({ owner: cfg.repo.owner, repo: cfg.repo.repo });
-			setDrafts(list);
-			setPicker('drafts');
-			setPrState({ status: 'idle' });
-		} catch (e) {
-			setPrState({ status: 'error', message: (e as Error).message });
-		}
-	}
+  async function restoreDraftToPublished(d: DraftRecord): Promise<void> {
+    if (!cfg?.repo?.owner || !cfg?.repo?.repo || !token) return;
+    await clearDraftKey({ owner: d.owner, repo: d.repo, branch: d.branch, path: d.path });
+    try {
+      const ref = defaults.defaultBranch;
+      const content = await getFileContentAtRef({ owner: d.owner, repo: d.repo, path: d.path, ref, token });
+      if (activePath === d.path) {
+        setMarkdown(content);
+      }
+      // Refresh both sets
+      const dsDefault = await listDrafts({ owner: d.owner, repo: d.repo, branch: ref });
+      setDefaultDrafts(dsDefault);
+      const currentRefForTree = activeCR?.branch || currentRef || defaults.defaultBranch;
+      const dsCurrent = await listDrafts({ owner: d.owner, repo: d.repo, branch: currentRefForTree! });
+      setDraftPathSet(new Set(dsCurrent.map((x) => x.path)));
+      setBranchDrafts(dsCurrent);
+    } catch (e) {
+      setCrState({ status: 'error', message: (e as Error).message });
+    }
+  }
 
-	async function chooseDraft(d: DraftRecord): Promise<void> {
-		setMarkdown(d.content);
-		setActivePR({ number: null, branch: d.branch, url: `https://github.com/${d.owner}/${d.repo}/tree/${d.branch}` });
-		setActivePath(d.path);
-		setPicker(null);
-	}
-
-	async function deleteDraft(d: DraftRecord): Promise<void> {
-		await clearDraftKey({ owner: d.owner, repo: d.repo, branch: d.branch, path: d.path });
-		setDrafts((prev) => prev.filter((x) => !(x.owner === d.owner && x.repo === d.repo && x.branch === d.branch && x.path === d.path)));
-	}
-
-	async function changeFileForActive(): Promise<void> {
-		if (!token || !activePR) return;
-		const owner = cfg?.repo?.owner!;
-		const repo = cfg?.repo?.repo!;
-		setPrState({ status: 'loading' });
-		try {
-			const ref = activePR.branch;
-			const paths = await listRepoPathsForRef({ owner, repo, ref, token });
-			setTreePaths(paths);
-			setCurrentRef(ref);
-			setPicker('file');
-			setPrState({ status: 'idle' });
-		} catch (e) {
-			setPrState({ status: 'error', message: (e as Error).message });
-		}
-	}
-
-  async function choosePR(n: number): Promise<void> {
+  async function changeFileForActive(): Promise<void> {
     if (!token) return;
     const owner = cfg?.repo?.owner!;
     const repo = cfg?.repo?.repo!;
-    setPrState({ status: 'loading' });
+    setCrState({ status: 'loading' });
     try {
-      const pr = await getPRDetails({ owner, repo, number: n, token });
-      setActivePR({ number: pr.number, branch: pr.head.ref, url: pr.url });
+      if (!activeCR || activeCR.branch === (cfg?.repo?.defaultBranch ?? cfg?.defaultBranch ?? 'main')) {
+        await ensureWorkingBranch();
+      }
+      const ref = (activeCR?.branch) as string;
+      const paths = await listRepoPathsForRef({ owner, repo, ref, token });
+      setTreePaths(paths);
+      setCurrentRef(ref);
+      setPicker('file');
+      setCrState({ status: 'idle' });
+    } catch (e) {
+      setCrState({ status: 'error', message: (e as Error).message });
+    }
+  }
+
+  async function selectChangeRequest(n: number): Promise<void> {
+    if (!token) return;
+    const owner = cfg?.repo?.owner!;
+    const repo = cfg?.repo?.repo!;
+    setCrState({ status: 'loading' });
+    try {
+      const pr = await getChangeRequestDetails({ owner, repo, number: n, token });
+      setActiveCR({ number: pr.number, branch: pr.head.ref, url: pr.url });
       setCurrentRef(pr.head.ref);
       const paths = await listRepoPathsForRef({ owner, repo, ref: pr.head.ref, token });
       setTreePaths(paths);
       setPicker('file');
-      setPrState({ status: 'idle' });
+      setCrState({ status: 'idle' });
     } catch (e) {
-      setPrState({ status: 'error', message: (e as Error).message });
+      setCrState({ status: 'error', message: (e as Error).message });
     }
   }
 
-  function openImagePanel(): void {
-    if (!activePR) {
-      setPrState({ status: 'error', message: 'Pick a PR or branch first to upload images.' });
-      return;
+  async function openImagePanel(): Promise<void> {
+    if (!activeCR || activeCR.branch === (cfg?.repo?.defaultBranch ?? cfg?.defaultBranch ?? 'main')) {
+      await ensureWorkingBranch();
     }
     setImageAlt(guessTitle());
     setImagePath('');
     setImageOpen(true);
   }
+
+	function openSettings(): void {
+		setSOwner(cfg?.repo?.owner ?? '');
+		setSRepo(cfg?.repo?.repo ?? '');
+		setSDefaultBranch(cfg?.repo?.defaultBranch ?? cfg?.defaultBranch ?? 'main');
+		setSContentDirs((cfg?.contentDirs ?? ['src/content']).join(', '));
+		setSAssetsDir(cfg?.assetsDir ?? 'src/assets');
+		setSPrBranchPrefix(cfg?.repo?.prBranchPrefix ?? 'content/');
+		setSPostPathTemplate(cfg?.repo?.postPathTemplate ?? '{contentDir}/{date}-{slug}.md');
+    setSCrTitleTemplate(cfg?.repo?.crTitleTemplate ?? 'Add post: {title} ({path})');
+		setSettingsMsg('');
+		setSettingsOpen(true);
+	}
+
+	async function saveSettings(): Promise<void> {
+		const contentDirs = sContentDirs.split(',').map((s) => s.trim()).filter(Boolean);
+		if (!sOwner || !sRepo || !contentDirs.length) {
+			setSettingsMsg('Owner, repo, and at least one contentDir are required.');
+			return;
+		}
+		saveLocalOverrides({
+			repo: {
+				provider: 'github',
+				owner: sOwner,
+				repo: sRepo,
+				defaultBranch: sDefaultBranch,
+            prBranchPrefix: sPrBranchPrefix,
+            postPathTemplate: sPostPathTemplate,
+            crTitleTemplate: sCrTitleTemplate
+			},
+			contentDirs,
+			assetsDir: sAssetsDir
+		});
+		const newCfg = await loadConfig();
+		setCfg(newCfg);
+		setSettingsMsg('Saved.');
+		void refreshSidebarTree();
+	}
+
+	async function resetSettings(): Promise<void> {
+		clearLocalOverrides();
+		const newCfg = await loadConfig();
+		setCfg(newCfg);
+		setSettingsMsg('Reset to file/defaults.');
+		void refreshSidebarTree();
+	}
 
   async function onImageFileSelected(e: React.ChangeEvent<HTMLInputElement>): Promise<void> {
     const file = e.target.files?.[0];
@@ -359,25 +458,29 @@ function Shell(): JSX.Element {
   }
 
   async function uploadAndInsertImage(): Promise<void> {
-    if (!token || !activePR || !imagePath) return;
+    if (!token || !imagePath) return;
+    if (!activeCR || activeCR.branch === defaults.defaultBranch) {
+      await ensureWorkingBranch();
+    }
+    if (!activeCR) return;
     const owner = cfg?.repo?.owner!;
     const repo = cfg?.repo?.repo!;
     const file = imageFileRef.current?.files?.[0];
     if (!file) {
-      setPrState({ status: 'error', message: 'Choose an image file first.' });
+      setCrState({ status: 'error', message: 'Choose an image file first.' });
       return;
     }
-    setPrState({ status: 'loading' });
+    setCrState({ status: 'loading' });
     try {
-      await uploadBinaryToBranch({ owner, repo, branch: activePR.branch, path: imagePath, file, token, message: `chore: add image ${imagePath}` });
+      await uploadBinaryToBranch({ owner, repo, branch: activeCR.branch, path: imagePath, file, token, message: `chore: add image ${imagePath}` });
       // Insert markdown
       const alt = imageAlt || file.name;
       const markdownLink = `![${alt}](${imagePath})`;
       editorRef.current?.insertTextAtCursor(markdownLink);
       setImageOpen(false);
-      setPrState({ status: 'success', url: activePR.url });
+      setCrState({ status: 'success', url: activeCR.url });
     } catch (e) {
-      setPrState({ status: 'error', message: (e as Error).message });
+      setCrState({ status: 'error', message: (e as Error).message });
     }
   }
 
@@ -385,16 +488,16 @@ function Shell(): JSX.Element {
     if (!token) return;
     const owner = cfg?.repo?.owner!;
     const repo = cfg?.repo?.repo!;
-    setPrState({ status: 'loading' });
+    setCrState({ status: 'loading' });
     try {
-      setActivePR({ number: null, branch, url: `https://github.com/${owner}/${repo}/tree/${branch}` });
+      setActiveCR({ number: null, branch, url: `https://github.com/${owner}/${repo}/tree/${branch}` });
       setCurrentRef(branch);
       const paths = await listRepoPathsForRef({ owner, repo, ref: branch, token });
       setTreePaths(paths);
       setPicker('file');
-      setPrState({ status: 'idle' });
+      setCrState({ status: 'idle' });
     } catch (e) {
-      setPrState({ status: 'error', message: (e as Error).message });
+      setCrState({ status: 'error', message: (e as Error).message });
     }
   }
 
@@ -402,92 +505,220 @@ function Shell(): JSX.Element {
     if (!token || !currentRef) return;
     const owner = cfg?.repo?.owner!;
     const repo = cfg?.repo?.repo!;
-    setPrState({ status: 'loading' });
+    setCrState({ status: 'loading' });
     try {
       const content = await getFileContentAtRef({ owner, repo, path, ref: currentRef, token });
       setMarkdown(content);
       setActivePath(path);
       setPicker(null);
-      setPrState({ status: 'idle' });
+      setCrState({ status: 'idle' });
     } catch (e) {
-      setPrState({ status: 'error', message: (e as Error).message });
+      setCrState({ status: 'error', message: (e as Error).message });
     }
   }
 
 	async function chooseFileFromSidebar(path: string): Promise<void> {
-		const ref = activePR?.branch || currentRef || defaults.defaultBranch;
+		const ref = activeCR?.branch || currentRef || defaults.defaultBranch;
 		if (!token || !ref) return;
 		const owner = cfg?.repo?.owner!;
 		const repo = cfg?.repo?.repo!;
-		setPrState({ status: 'loading' });
+		setCrState({ status: 'loading' });
 		try {
 			const content = await getFileContentAtRef({ owner, repo, path, ref, token });
 			setMarkdown(content);
 			setActivePath(path);
-			if (!activePR) setActivePR({ number: null, branch: ref, url: `https://github.com/${owner}/${repo}/tree/${ref}` });
-			setPrState({ status: 'idle' });
+			if (!activeCR) setActiveCR({ number: null, branch: ref, url: `https://github.com/${owner}/${repo}/tree/${ref}` });
+			setCrState({ status: 'idle' });
 		} catch (e) {
-			setPrState({ status: 'error', message: (e as Error).message });
+			setCrState({ status: 'error', message: (e as Error).message });
 		}
 	}
 
-	async function refreshSidebarTree(): Promise<void> {
+	async function ensureWorkingBranch(): Promise<void> {
 		if (!token || !cfg?.repo?.owner || !cfg?.repo?.repo) return;
-		const ref = activePR?.branch || currentRef || defaults.defaultBranch;
-		if (!ref) return;
-		setPrState({ status: 'loading' });
-		try {
-			const paths = await listRepoPathsForRef({ owner: cfg.repo!.owner!, repo: cfg.repo!.repo!, ref, token });
-			setTreePaths(paths);
-			setPrState({ status: 'idle' });
-		} catch (e) {
-			setPrState({ status: 'error', message: (e as Error).message });
-		}
-	}
-	async function createOrOpenPRFromBranch(): Promise<void> {
-		if (!token || !activePR) return;
-		const owner = cfg?.repo?.owner!;
-		const repo = cfg?.repo?.repo!;
 		const base = defaults.defaultBranch;
-		setPrState({ status: 'loading' });
+		const owner = cfg.repo.owner;
+		const repo = cfg.repo.repo;
+		const inferredTitle = guessTitle();
+		const slug = slugify(inferredTitle);
+		const branchDesired = `${defaults.branchPrefix}${slug}`;
 		try {
-			const existing = await findPRForBranch({ owner, repo, head: activePR.branch, token });
-			if (existing) {
-				setActivePR({ number: existing.number, branch: activePR.branch, url: existing.url });
-				setPrState({ status: 'success', url: existing.url });
-				return;
-			}
-			const title = `Content updates for ${activePR.branch}`;
-			const body = activePath ? `Updates to ${activePath}` : undefined;
-			const pr = await openPRForBranch({ owner, repo, head: activePR.branch, base, title, body, token });
-			setActivePR({ number: pr.number, branch: activePR.branch, url: pr.url });
-			setPrState({ status: 'success', url: pr.url });
+			await createBranchFromBase({ owner, repo, base, branch: branchDesired, token });
+			setActiveCR({ number: null, branch: branchDesired, url: `https://github.com/${owner}/${repo}/tree/${branchDesired}` });
 		} catch (e) {
-			setPrState({ status: 'error', message: (e as Error).message });
+			// If branch exists, just set it
+			setActiveCR({ number: null, branch: branchDesired, url: `https://github.com/${owner}/${repo}/tree/${branchDesired}` });
 		}
 	}
+
+  async function refreshSidebarTree(): Promise<void> {
+    if (!token || !cfg?.repo?.owner || !cfg?.repo?.repo) return;
+    const ref = activeCR?.branch || currentRef || defaults.defaultBranch;
+    if (!ref) return;
+    setCrState({ status: 'loading' });
+    try {
+      const paths = await listRepoPathsForRef({ owner: cfg.repo!.owner!, repo: cfg.repo!.repo!, ref, token });
+      setTreePaths(paths);
+      setCrState({ status: 'idle' });
+    } catch (e) {
+      setCrState({ status: 'error', message: (e as Error).message });
+    }
+  }
+async function openOrCreateCRForBranch(): Promise<void> {
+    if (!token || !activeCR) return;
+    const owner = cfg?.repo?.owner!;
+    const repo = cfg?.repo?.repo!;
+    const base = defaults.defaultBranch;
+    setCrState({ status: 'loading' });
+    try {
+        const existing = await findChangeRequestForBranch({ owner, repo, head: activeCR.branch, token });
+        if (existing) {
+            setActiveCR({ number: existing.number, branch: activeCR.branch, url: existing.url });
+            setCrState({ status: 'success', url: existing.url });
+            return;
+        }
+        const title = `Content updates for ${activeCR.branch}`;
+        const body = activePath ? `Updates to ${activePath}` : undefined;
+        const pr = await openChangeRequestForBranch({ owner, repo, head: activeCR.branch, base, title, body, token });
+        setActiveCR({ number: pr.number, branch: activeCR.branch, url: pr.url });
+        setCrState({ status: 'success', url: pr.url });
+    } catch (e) {
+        setCrState({ status: 'error', message: (e as Error).message });
+    }
+}
 	if (status !== 'authed') {
 		return <Login />;
 	}
 	return (
 		<div style={{ display: 'grid', gridTemplateColumns: '280px 1fr 1fr', height: '100vh' }}>
-			<aside style={{ borderRight: '1px solid #e0e0e0', display: 'flex', flexDirection: 'column' }}>
-				<div style={{ padding: '8px 12px', borderBottom: '1px solid #e0e0e0' }}>
-					<strong>Documents</strong>
-					<div style={{ fontSize: 12, color: '#666' }}>Branch: {activePR?.branch || currentRef || defaults.defaultBranch}</div>
-					<div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
-						<input type="text" placeholder="Filter files…" value={sidebarFilter} onChange={(e) => setSidebarFilter(e.target.value)} style={{ flex: 1, padding: 6 }} />
-						<button onClick={() => void refreshSidebarTree()}>Refresh</button>
+				<aside style={{ borderRight: '1px solid #e0e0e0', display: 'flex', flexDirection: 'column' }}>
+					<div style={{ padding: '0 12px', borderBottom: '1px solid #e0e0e0' }}>
+            <div style={{ display: 'flex', gap: 12 }}>
+              <button style={{ borderBottom: leftTab === 'content' ? '2px solid #000' : '2px solid transparent', padding: '8px 0' }} onClick={() => setLeftTab('content')}>Content</button>
+              <button style={{ borderBottom: leftTab === 'changes' ? '2px solid #000' : '2px solid transparent', padding: '8px 0', display: 'flex', alignItems: 'center', gap: 6 }} onClick={() => setLeftTab('changes')}>
+                Change Requests
+                <span style={{ background: '#eee', borderRadius: 8, padding: '0 6px', fontSize: 12 }}>{sidebarCRs.length}</span>
+              </button>
+              <button style={{ borderBottom: leftTab === 'local' ? '2px solid #000' : '2px solid transparent', padding: '8px 0', display: 'flex', alignItems: 'center', gap: 6 }} onClick={() => setLeftTab('local')}>
+                Local Changes
+                <span style={{ background: '#eee', borderRadius: 8, padding: '0 6px', fontSize: 12 }}>{defaultDrafts.length}</span>
+              </button>
+            </div>
+            {leftTab === 'content' ? (
+              <div style={{ padding: '8px 0' }}>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <input type="text" placeholder="Filter files…" value={sidebarFilter} onChange={(e) => setSidebarFilter(e.target.value)} style={{ flex: 1, padding: 6 }} />
+                  <button onClick={() => void refreshSidebarTree()}>Refresh</button>
+                </div>
+              </div>
+            ) : leftTab === 'changes' ? (
+            <div style={{ padding: '8px 0' }}>
+              {cfg?.repo?.owner && cfg?.repo?.repo ? (
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+                  <button onClick={onCreateCR} disabled={crState.status === 'loading'}>
+                    {crState.status === 'loading' ? 'Creating…' : 'Create change request'}
+                  </button>
+              {activeCR ? (
+                <button onClick={() => void switchToDefaultBranch()}>
+                  Switch to Published
+                </button>
+              ) : null}
+                  <button onClick={onUpdateCR} disabled={crState.status === 'loading'}>
+                    Update change request
+                  </button>
+                  <button onClick={openOrCreateCRForBranch} disabled={crState.status === 'loading'}>
+                    Open/Create change request
+                  </button>
+                  <button onClick={changeFileForActive} disabled={crState.status === 'loading'}>
+                    Change file…
+                  </button>
+                  <button onClick={openImagePanel} disabled={crState.status === 'loading'}>
+                    Insert image…
+                  </button>
+                  <button onClick={openNewFilePanel} disabled={crState.status === 'loading'}>
+                    New file…
+                  </button>
+                </div>
+              ) : (
+                <div style={{ marginBottom: 8, color: '#666' }}>Configure your repository in Settings to manage change requests.</div>
+              )}
+              <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
+                <input type="text" placeholder="Filter change requests…" value={sidebarCRFilter} onChange={(e) => setSidebarCRFilter(e.target.value)} style={{ flex: 1, padding: 6 }} />
+                <button onClick={() => void refreshCRs()}>Refresh</button>
+              </div>
+            </div>
+        ) : null}
+      </div>
+      {leftTab === 'local' && (
+        <div style={{ borderBottom: '1px solid #e0e0e0' }}>
+          <div style={{ padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 12 }}>
+            <strong>Local changes</strong>
+            <span style={{ fontSize: 12, color: '#666' }}>({defaultDrafts.length})</span>
+          </div>
+          <div style={{ maxHeight: 240, overflow: 'auto' }}>
+            {defaultDrafts.length === 0 ? (
+              <div style={{ padding: '8px 12px', color: '#666' }}>No local changes</div>
+            ) : (
+              defaultDrafts.map((d) => (
+                <div key={`${d.owner}/${d.repo}:${d.branch}:${d.path}`} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px' }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontFamily: 'ui-monospace, monospace' }}>{d.path}</div>
+                    <div style={{ fontSize: 12, color: '#666' }}>Saved {new Date(d.updatedAt).toLocaleString()}</div>
+                  </div>
+                  <button onClick={() => { setActivePath(d.path); setMarkdown(d.content); }}>Open</button>
+                  <button onClick={() => void restoreDraftToPublished(d)} style={{ color: '#b50b0b' }}>Restore</button>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+      <div style={{ flex: 1, overflow: 'auto' }}>
+						{leftTab === 'content' ? (
+							<FileTree
+								paths={treePaths.filter((p) => (sidebarFilter ? p.toLowerCase().includes(sidebarFilter.toLowerCase()) : true))}
+								roots={cfg?.contentDirs}
+								onSelect={(p) => void chooseFileFromSidebar(p)}
+								draftPaths={draftPathSet}
+								onNewInDir={(dir) => {
+									setNewFilePath(
+										renderTemplate(defaults.pathTemplate, {
+											contentDir: dir,
+											date: getDate(),
+											slug: slugify(guessTitle())
+										})
+									);
+									setNewFileOpen(true);
+								}}
+							/>
+						) : (
+            <div>
+              {sidebarCRs
+                .filter((p) => (sidebarCRFilter ? (`#${p.number} ${p.title}`).toLowerCase().includes(sidebarCRFilter.toLowerCase()) : true))
+                .map((p) => (
+                  <div key={p.number} style={{ padding: '6px 12px', cursor: 'pointer' }} onClick={() => void selectChangeRequest(p.number)}>
+                    #{p.number} — {p.title}
+                  </div>
+                ))}
+              {sidebarCRs.length === 0 && <div style={{ padding: '8px 12px', color: '#666' }}>No open change requests</div>}
+            </div>
+						)}
+					</div>
+				{/* Sidebar footer with branch controls, sticky at bottom */}
+				<div style={{ borderTop: '1px solid #e0e0e0', position: 'sticky', bottom: 0, background: '#fff', zIndex: 1 }}>
+					<div style={{ padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 8 }}>
+						<span style={{ fontSize: 12, color: '#666' }}>Branch: {activeCR?.branch || currentRef || defaults.defaultBranch}</span>
+						{(activeCR?.branch || currentRef) && (activeCR?.branch || currentRef) !== defaults.defaultBranch ? (
+							<button onClick={() => void switchToDefaultBranch()} title={`Switch to ${defaults.defaultBranch}`} style={{ fontSize: 12, padding: '2px 6px', marginLeft: 'auto' }}>
+								Switch to Published
+							</button>
+						) : <span style={{ flex: 1 }} />}
+						<button onClick={() => void openPicker('branch')} style={{ fontSize: 12, padding: '2px 6px' }}>
+							Pick branch
+						</button>
 					</div>
 				</div>
-				<div style={{ flex: 1, overflow: 'auto' }}>
-					<FileTree
-						paths={treePaths.filter((p) => (sidebarFilter ? p.toLowerCase().includes(sidebarFilter.toLowerCase()) : true))}
-						roots={cfg?.contentDirs}
-						onSelect={(p) => void chooseFileFromSidebar(p)}
-					/>
-				</div>
-			</aside>
+				</aside>
 			<section style={{ borderRight: '1px solid #e0e0e0' }}>
 				<header style={{ padding: '8px 12px' }}>
 					<div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -498,50 +729,16 @@ function Shell(): JSX.Element {
 						</span>
 					</div>
 					<div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
-						<button onClick={onCreatePR} disabled={prState.status === 'loading'}>
-							{prState.status === 'loading' ? 'Creating PR…' : 'Create PR'}
-						</button>
-						<button onClick={() => openPicker('pr')} disabled={prState.status === 'loading'}>
-							Pick PR
-						</button>
-						<button onClick={() => openPicker('branch')} disabled={prState.status === 'loading'}>
-							Pick Branch
-						</button>
-						<button onClick={openDrafts} disabled={prState.status === 'loading'}>
-							Drafts
-						</button>
-                {activePR ? (
-                  <button onClick={onUpdatePR} disabled={prState.status === 'loading'}>
-                    Update PR
-                  </button>
-                ) : null}
-                {activePR ? (
-                  <button onClick={createOrOpenPRFromBranch} disabled={prState.status === 'loading'}>
-                    Open/Create PR for Branch
-                  </button>
-                ) : null}
-                {activePR ? (
-                  <button onClick={changeFileForActive} disabled={prState.status === 'loading'}>
-                    Change file…
-                  </button>
-                ) : null}
-                {activePR ? (
-                  <button onClick={openImagePanel} disabled={prState.status === 'loading'}>
-                    Insert image…
-                  </button>
-                ) : null}
-						{activePR ? (
-							<button onClick={openNewFilePanel} disabled={prState.status === 'loading'}>
-								New file…
-							</button>
-						) : null}
+                <button onClick={openSettings} disabled={crState.status === 'loading'}>
+                  Settings
+                </button>
 					</div>
 				</header>
-				{activePR ? (
+				{activeCR ? (
 					<div style={{ background: '#e7f3ff', color: '#054289', padding: '6px 12px' }}>
-						Working on PR #{activePR.number ?? 'new'} — Branch: {activePR.branch}
+						Working on change request #{activeCR.number ?? 'new'} — Branch: {activeCR.branch}
 						{activePath ? ` — File: ${activePath}` : ''} —
-						<a href={activePR.url} target="_blank" rel="noreferrer" style={{ marginLeft: 6 }}>Open</a>
+						<a href={activeCR.url} target="_blank" rel="noreferrer" style={{ marginLeft: 6 }}>Open</a>
 					</div>
 				) : null}
 				{draftKey && draftStatus.mode === 'restored' && (
@@ -551,34 +748,18 @@ function Shell(): JSX.Element {
 						<button onClick={() => void clearDraft()}>Clear draft</button>
 					</div>
 				)}
-				{draftKey && draftStatus.mode !== 'restored' && draftStatus.savedAt && (
-					<div style={{ background: '#f5f5f5', color: '#333', padding: '4px 12px', fontSize: 12 }}>
-						Draft saved {new Date(draftStatus.savedAt).toLocaleTimeString()}
-					</div>
-				)}
-				{picker && picker !== 'file' && picker !== 'drafts' && (
-					<div style={{ padding: '8px 12px', borderBottom: '1px solid #e0e0e0', display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-						<strong>{picker === 'pr' ? 'Open PR' : 'Open Branch'}</strong>
-						{picker === 'pr' ? (
-							<input type="text" placeholder="Filter PRs…" value={prFilter} onChange={(e) => setPrFilter(e.target.value)} style={{ padding: 4, minWidth: 240 }} />
-						) : (
-							<input type="text" placeholder="Filter branches…" value={branchFilter} onChange={(e) => setBranchFilter(e.target.value)} style={{ padding: 4, minWidth: 240 }} />
-						)}
-						<button onClick={() => setPicker(null)} style={{ marginLeft: 'auto' }}>Close</button>
-					</div>
-				)}
-        {picker === 'pr' && (
-          <div style={{ maxHeight: 220, overflow: 'auto', borderBottom: '1px solid #e0e0e0' }}>
-            {items
-              .filter((pr: any) => (prFilter ? (pr.title as string).toLowerCase().includes(prFilter.toLowerCase()) || String(pr.number).includes(prFilter) : true))
-              .map((pr: any) => (
-                <div key={pr.number} style={{ padding: '6px 12px', cursor: 'pointer' }} onClick={() => void choosePR(pr.number)}>
-                  #{pr.number} — {pr.title}
+              {draftKey && draftStatus.mode !== 'restored' && draftStatus.savedAt && (
+                <div style={{ background: '#f5f5f5', color: '#333', padding: '4px 12px', fontSize: 12 }}>
+                  Draft saved {new Date(draftStatus.savedAt).toLocaleTimeString()}
                 </div>
-              ))}
-            {items.length === 0 && <div style={{ padding: '6px 12px', color: '#666' }}>No open PRs</div>}
-          </div>
-        )}
+              )}
+              {picker && picker !== 'file' && (
+                <div style={{ padding: '8px 12px', borderBottom: '1px solid #e0e0e0', display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <strong>Open Branch</strong>
+                  <input type="text" placeholder="Filter branches…" value={branchFilter} onChange={(e) => setBranchFilter(e.target.value)} style={{ padding: 4, minWidth: 240 }} />
+                  <button onClick={() => setPicker(null)} style={{ marginLeft: 'auto' }}>Close</button>
+                </div>
+              )}
         {picker === 'branch' && (
           <div style={{ maxHeight: 220, overflow: 'auto', borderBottom: '1px solid #e0e0e0' }}>
             {items
@@ -604,6 +785,50 @@ function Shell(): JSX.Element {
             />
           </div>
         )}
+        {settingsOpen && (
+          <div style={{ borderBottom: '1px solid #e0e0e0' }}>
+            <div style={{ padding: '8px 12px', display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12, alignItems: 'end' }}>
+              <div>
+                <label>Owner</label>
+                <input type="text" value={sOwner} onChange={(e) => setSOwner(e.target.value)} style={{ width: '100%', padding: 6 }} />
+              </div>
+              <div>
+                <label>Repo</label>
+                <input type="text" value={sRepo} onChange={(e) => setSRepo(e.target.value)} style={{ width: '100%', padding: 6 }} />
+              </div>
+              <div>
+                <label>Default branch</label>
+                <input type="text" value={sDefaultBranch} onChange={(e) => setSDefaultBranch(e.target.value)} style={{ width: '100%', padding: 6 }} />
+              </div>
+              <div>
+                <label>Content dirs (comma)</label>
+                <input type="text" value={sContentDirs} onChange={(e) => setSContentDirs(e.target.value)} style={{ width: '100%', padding: 6 }} />
+              </div>
+              <div>
+                <label>Assets dir</label>
+                <input type="text" value={sAssetsDir} onChange={(e) => setSAssetsDir(e.target.value)} style={{ width: '100%', padding: 6 }} />
+              </div>
+              <div>
+                <label>PR branch prefix</label>
+                <input type="text" value={sPrBranchPrefix} onChange={(e) => setSPrBranchPrefix(e.target.value)} style={{ width: '100%', padding: 6 }} />
+              </div>
+              <div>
+                <label>Post path template</label>
+                <input type="text" value={sPostPathTemplate} onChange={(e) => setSPostPathTemplate(e.target.value)} style={{ width: '100%', padding: 6 }} />
+              </div>
+              <div>
+                <label>Change request title template</label>
+                <input type="text" value={sCrTitleTemplate} onChange={(e) => setSCrTitleTemplate(e.target.value)} style={{ width: '100%', padding: 6 }} />
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button onClick={() => void saveSettings()}>Save</button>
+                <button onClick={() => void resetSettings()}>Reset</button>
+                <button onClick={() => setSettingsOpen(false)} style={{ marginLeft: 'auto' }}>Close</button>
+              </div>
+              {settingsMsg && <div style={{ gridColumn: '1 / -1', color: '#555' }}>{settingsMsg}</div>}
+            </div>
+          </div>
+        )}
         {imageOpen && (
           <div style={{ borderBottom: '1px solid #e0e0e0' }}>
             <div style={{ padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
@@ -611,7 +836,7 @@ function Shell(): JSX.Element {
               <input ref={imageFileRef} type="file" accept="image/*" onChange={onImageFileSelected} />
               <input type="text" placeholder="Alt text" value={imageAlt} onChange={(e) => setImageAlt(e.target.value)} style={{ padding: 6, minWidth: 160 }} />
               <input type="text" placeholder="Repo path (e.g., src/assets/2025/01/hero.png)" value={imagePath} onChange={(e) => setImagePath(e.target.value)} style={{ padding: 6, minWidth: 360 }} />
-              <button onClick={uploadAndInsertImage} disabled={prState.status === 'loading' || !imagePath}>Upload & insert</button>
+              <button onClick={uploadAndInsertImage} disabled={crState.status === 'loading' || !imagePath}>Upload & insert</button>
               <button onClick={() => setImageOpen(false)} style={{ marginLeft: 'auto' }}>Close</button>
             </div>
           </div>
@@ -640,7 +865,7 @@ function Shell(): JSX.Element {
             </div>
           </div>
         )}
-				{activePR && newFileOpen && (
+				{newFileOpen && (
 					<div style={{ borderBottom: '1px solid #e0e0e0' }}>
 						<div style={{ padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
 							<strong>New File in Branch</strong>
@@ -651,7 +876,7 @@ function Shell(): JSX.Element {
 								onChange={(e) => setNewFilePath(e.target.value)}
 								style={{ padding: 6, minWidth: 320 }}
 							/>
-							<button onClick={createNewFileInBranch} disabled={prState.status === 'loading' || !newFilePath}>
+							<button onClick={createNewFileInBranch} disabled={crState.status === 'loading' || !newFilePath}>
 								Create file
 							</button>
 							<button onClick={usePathOnly} disabled={!newFilePath}>Use path only</button>
@@ -659,27 +884,27 @@ function Shell(): JSX.Element {
 						</div>
 					</div>
 				)}
-				{prState.status === 'success' && prState.url ? (
-					<div style={{ background: '#e6ffed', color: '#044a14', padding: '6px 12px' }}>
-						PR created: <a href={prState.url} target="_blank" rel="noreferrer">{prState.url}</a>
-					</div>
-				) : null}
-				{prState.status === 'error' && prState.message ? (
-					<div style={{ background: '#ffebe9', color: '#b50b0b', padding: '6px 12px' }}>
-						Failed to create PR: {prState.message}
-					</div>
-				) : null}
+              {crState.status === 'success' && crState.url ? (
+                <div style={{ background: '#e6ffed', color: '#044a14', padding: '6px 12px' }}>
+                  Change request created: <a href={crState.url} target="_blank" rel="noreferrer">{crState.url}</a>
+                </div>
+              ) : null}
+              {crState.status === 'error' && crState.message ? (
+                <div style={{ background: '#ffebe9', color: '#b50b0b', padding: '6px 12px' }}>
+                  Failed to create change request: {crState.message}
+                </div>
+              ) : null}
 				<Editor ref={editorRef} value={markdown} onChange={setMarkdown} />
 			</section>
 			<section>
 				<header style={{ padding: '8px 12px' }}>
 					<strong>Preview</strong>
 				</header>
-				<Preview
-					markdown={markdown}
-					repo={activePR && cfg?.repo?.owner && cfg?.repo?.repo ? { owner: cfg.repo.owner, repo: cfg.repo.repo, ref: activePR.branch, filePath: activePath ?? undefined } : undefined}
-					assetsDir={cfg?.assetsDir}
-				/>
+            <Preview
+              markdown={markdown}
+              repo={activeCR && cfg?.repo?.owner && cfg?.repo?.repo ? { owner: cfg.repo.owner, repo: cfg.repo.repo, ref: activeCR.branch, filePath: activePath ?? undefined } : undefined}
+              assetsDir={cfg?.assetsDir}
+            />
 			</section>
 		</div>
 	);

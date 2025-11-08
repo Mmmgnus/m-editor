@@ -52,12 +52,16 @@ export function FileTree({
 	paths,
 	onSelect,
 	roots,
-	filterExt = ['.md', '.markdown', '.mdx']
+	filterExt = ['.md', '.markdown', '.mdx'],
+	draftPaths,
+	onNewInDir
 }: {
 	paths: string[];
 	onSelect: (path: string) => void;
 	roots?: string[]; // limit to these roots
 	filterExt?: string[];
+	draftPaths?: Set<string>;
+	onNewInDir?: (dirPath: string) => void;
 }): JSX.Element {
 	const [expanded, setExpanded] = React.useState<Set<string>>(new Set());
 
@@ -83,8 +87,18 @@ export function FileTree({
 						const isOpen = expanded.has(n.path);
 						return (
 							<div key={n.path}>
-								<div style={{ padding: '4px 12px', cursor: 'pointer', color: '#333' }} onClick={() => toggle(n.path)}>
-									{isOpen ? '▾' : '▸'} {n.name}
+								<div style={{ display: 'flex', alignItems: 'center', padding: '4px 12px', color: '#333' }}>
+									<span style={{ cursor: 'pointer', flex: 1 }} onClick={() => toggle(n.path)}>
+										{isOpen ? '▾' : '▸'} {n.name}
+									</span>
+									{onNewInDir ? (
+										<button
+											style={{ fontSize: 12, padding: '2px 6px' }}
+											onClick={() => onNewInDir(n.path)}
+										>
+											+ New
+										</button>
+									) : null}
 								</div>
 								{isOpen && <div style={{ paddingLeft: 12 }}>{renderNodes(n.children || [])}</div>}
 							</div>
@@ -96,10 +110,13 @@ export function FileTree({
 					return (
 						<div
 							key={n.path}
-							style={{ padding: '2px 12px', cursor: 'pointer', color: '#222' }}
+							style={{ padding: '2px 12px', cursor: 'pointer', color: '#222', display: 'flex', alignItems: 'center', gap: 6 }}
 							onClick={() => onSelect(n.path)}
 						>
 							{n.name}
+							{draftPaths?.has(n.path) ? (
+								<span title="Uncommitted local changes" style={{ color: '#f59e0b' }}>•</span>
+							) : null}
 						</div>
 					);
 				})}
@@ -118,4 +135,3 @@ export function FileTree({
 		</div>
 	);
 }
-

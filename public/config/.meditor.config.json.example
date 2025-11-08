@@ -7,8 +7,8 @@
 		"owner": "your-username",
 		"repo": "your-eleventy-repo",
 		"defaultBranch": "main",
-		"prBranchPrefix": "content/",
-		"postPathTemplate": "{contentDir}/{date}-{slug}.md",
-		"prTitleTemplate": "Add: {title} ({path})"
-	}
+    "prBranchPrefix": "content/",
+    "postPathTemplate": "{contentDir}/{date}-{slug}.md",
+    "crTitleTemplate": "Add: {title} ({path})"
+  }
 }
